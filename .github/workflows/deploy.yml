@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Preparar la clave SSH
         env:
@@ -28,30 +28,25 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          cat > ~/.ssh/config <<'EOF'
-          Host deploy
-            IdentityFile ~/.ssh/deploy_key
-            StrictHostKeyChecking accept-new
-            UserKnownHostsFile ~/.ssh/known_hosts
-          EOF
 
       - name: Copiar el código al servidor
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          cat >> ~/.ssh/config <<EOF
-          Host deploy
-            HostName ${DEPLOY_HOST}
-            User ${DEPLOY_USER}
-          EOF
-          ssh deploy "mkdir -p /srv/apps_matias/ma-brookesia-ota/app /srv/apps_matias/ma-brookesia-ota/cache"
+          # Las opciones se expanden aqui (bash), no en rsync: rsync no usa shell
+          # para el -e y no expandiria un "~".
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          TARGET="${DEPLOY_USER}@${DEPLOY_HOST}"
+          REMOTE=/srv/apps_matias/ma-brookesia-ota
+
+          ssh $SSH_OPTS "$TARGET" "mkdir -p ${REMOTE}/app ${REMOTE}/cache"
           # El contenedor corre como el usuario 10001 (ver app/Dockerfile): el bind
           # mount del cache tiene que pertenecerle para que pueda escribir.
-          ssh deploy "chown -R 10001:10001 /srv/apps_matias/ma-brookesia-ota/cache"
+          ssh $SSH_OPTS "$TARGET" "chown -R 10001:10001 ${REMOTE}/cache"
           rsync -az --delete --exclude '__pycache__' --exclude '.pytest_cache' \
-            -e "ssh -F ~/.ssh/config" app/ deploy:/srv/apps_matias/ma-brookesia-ota/app/
-          rsync -az -e "ssh -F ~/.ssh/config" compose.yml deploy:/srv/apps_matias/ma-brookesia-ota/compose.yml
+            -e "ssh $SSH_OPTS" app/ "$TARGET:${REMOTE}/app/"
+          rsync -az -e "ssh $SSH_OPTS" compose.yml "$TARGET:${REMOTE}/compose.yml"
 
       - name: Escribir la configuración
         env:
@@ -67,18 +62,25 @@ jobs:
           OTA_MANIFEST_TTL=30
           OTA_LOG_LEVEL=INFO
           EOF
-          scp -F ~/.ssh/config .env deploy:/srv/apps_matias/ma-brookesia-ota/.env
-          ssh deploy "chmod 600 /srv/apps_matias/ma-brookesia-ota/.env"
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          TARGET="${DEPLOY_USER}@${DEPLOY_HOST}"
+          scp $SSH_OPTS .env "$TARGET:/srv/apps_matias/ma-brookesia-ota/.env"
+          ssh $SSH_OPTS "$TARGET" "chmod 600 /srv/apps_matias/ma-brookesia-ota/.env"
 
       - name: Levantar el servicio
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh deploy "cd /srv/apps_matias/ma-brookesia-ota \
-            && docker compose up -d --build \
-            && docker compose ps"
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd /srv/apps_matias/ma-brookesia-ota \
+             && docker compose up -d --build \
+             && docker compose ps"
 
       - name: Comprobar que responde
         run: |
-          curl -fsS --retry 6 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/healthz
+          curl -fsS --retry 8 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/healthz
           echo
-          curl -fsS --retry 6 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/manifest.json
+          curl -fsS --retry 8 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/manifest.json
           echo
