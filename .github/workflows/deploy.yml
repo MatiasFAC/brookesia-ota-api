@@ -51,6 +51,8 @@ jobs:
       - name: Escribir la configuración
         env:
           OTA_GITHUB_TOKEN: ${{ secrets.OTA_GITHUB_TOKEN }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           # El .env lleva el token de GitHub y queda en el servidor con 0600.
           umask 077
