@@ -26,7 +26,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
-from store import CHANNELS, Firmware, InvalidFirmware, Store
+from store import CHANNELS, MAX_UPLOAD_BYTES, Firmware, InvalidFirmware, Store
 
 logging.basicConfig(
     level=os.getenv("OTA_LOG_LEVEL", "INFO"),
@@ -166,6 +166,19 @@ async def upload(
     """
     _check_upload_token(x_ota_token, authorization)
     name = _channel_or_400(channel)
+
+    # Se comprueba el Content-Length antes de leer el cuerpo, para no cargarlo
+    # en memoria si es enorme.
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"el binario es demasiado grande (maximo {MAX_UPLOAD_BYTES} bytes)",
+                )
+        except ValueError:
+            pass
 
     data = await request.body()
     try:
