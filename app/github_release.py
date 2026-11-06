@@ -3,6 +3,12 @@
 El firmware se publica como *release* del repositorio privado
 ``MatiasFAC/esp-brookesia-jc4880``. Esta API es la única que puede leerlo, y
 lo hace con un token de GitHub que vive en el servidor (nunca en el firmware).
+
+Detalle importante: en un repositorio **privado** los assets no se pueden
+descargar desde ``browser_download_url`` (devuelve 404). Hay que pedir el
+asset por la API (``/releases/assets/<id>``) con ``Accept:
+application/octet-stream``, que responde 302 hacia la CDN con una URL firmada.
+Esa segunda petición va **sin** el token, para no filtrarlo fuera de GitHub.
 """
 
 from __future__ import annotations
@@ -10,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -39,7 +44,6 @@ class Release:
     url: str
     released_at: str
     notes: str
-    asset_url: str
 
     def as_manifest(self, base_url: str) -> dict:
         """Manifiesto que consume el firmware."""
@@ -78,14 +82,48 @@ class ReleaseCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._release: Release | None = None
         self._release_time: float = 0.0
+        self._asset: dict | None = None
 
     # -- API de GitHub ----------------------------------------------------
 
-    def _headers(self) -> dict:
+    def _headers(self, octet_stream: bool = False) -> dict:
         headers = {"Accept": "application/vnd.github+json"}
+        if octet_stream:
+            headers["Accept"] = "application/octet-stream"
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _asset_request(self, asset: dict) -> httpx.Response:
+        """Pide un asset por la API de GitHub y sigue la redirección a la CDN.
+
+        La primera petición lleva el token; la de la CDN va sin él.
+        """
+        api_url = asset.get("url")
+        if not api_url:
+            raise RuntimeError(f"el asset {asset.get('name')} no tiene url de API")
+
+        with httpx.Client(timeout=120.0, follow_redirects=False) as client:
+            response = client.get(
+                api_url, headers=self._headers(octet_stream=True)
+            )
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location")
+                if not location:
+                    raise RuntimeError(
+                        f"redirección sin location para el asset {asset.get('name')}"
+                    )
+                response = client.get(
+                    location,
+                    headers={"Accept": "application/octet-stream"},
+                    follow_redirects=True,
+                )
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"GitHub devolvió {response.status_code} al pedir "
+                    f"{asset.get('name')}"
+                )
+            return response
 
     def _fetch_latest_release(self) -> Release:
         url = f"{GITHUB_API}/repos/{self.owner}/{self.repo}/releases/latest"
@@ -103,6 +141,7 @@ class ReleaseCache:
                 f"el release {data.get('tag_name')} no tiene el asset '{ASSET_NAME}'"
             )
         asset = assets[ASSET_NAME]
+        self._asset = asset
         sha256 = self._read_sha256(assets)
 
         tag = data.get("tag_name", "")
@@ -115,21 +154,23 @@ class ReleaseCache:
             url=asset.get("browser_download_url", ""),
             released_at=data.get("published_at", ""),
             notes=(data.get("body") or "")[:2000],
-            asset_url=asset.get("url", ""),
         )
 
     def _read_sha256(self, assets: dict) -> str:
-        """Saca el sha256 del asset de texto; si no existe, lo calcula."""
-        if ASSET_SHA_NAME in assets:
-            url = assets[ASSET_SHA_NAME].get("browser_download_url")
-            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                response = client.get(url, headers=self._headers())
-                if response.status_code == 200:
-                    digest = response.text.strip().split()[0]
-                    if len(digest) == 64:
-                        return digest.lower()
-        LOG.warning("no hay asset '%s': se calculará el sha256 al descargar", ASSET_SHA_NAME)
-        return ""
+        """Saca el sha256 del asset de texto; si no existe, queda vacío."""
+        if ASSET_SHA_NAME not in assets:
+            LOG.warning("no hay asset '%s': se calculará al descargar", ASSET_SHA_NAME)
+            return ""
+        try:
+            response = self._asset_request(assets[ASSET_SHA_NAME])
+            digest = response.text.strip().split()[0].lower()
+        except Exception as exc:  # noqa: BLE001 - no es fatal: se calcula al descargar
+            LOG.warning("no se pudo leer '%s': %s", ASSET_SHA_NAME, exc)
+            return ""
+        if len(digest) != 64:
+            LOG.warning("'%s' no contiene un sha256 válido", ASSET_SHA_NAME)
+            return ""
+        return digest
 
     # -- caché ------------------------------------------------------------
 
@@ -151,27 +192,27 @@ class ReleaseCache:
         if target.exists() and target.stat().st_size == release.size:
             return target
 
-        LOG.info("descargando %s (%d bytes)", release.url, release.size)
-        tmp_fd, tmp_name = tempfile.mkstemp(dir=self.cache_dir)
-        os.close(tmp_fd)
+        LOG.info("descargando el firmware de %s (%d bytes)", release.tag, release.size)
+        if self._asset is None:
+            raise RuntimeError("no hay asset del firmware en caché")
+        fd, tmp_name = tempfile.mkstemp(dir=self.cache_dir)
+        os.close(fd)
         tmp_path = Path(tmp_name)
         digest = hashlib.sha256()
         try:
-            with httpx.stream(
-                "GET", release.url, headers=self._headers(), timeout=120.0, follow_redirects=True
-            ) as response:
-                if response.status_code != 200:
-                    raise RuntimeError(f"descarga del firmware: HTTP {response.status_code}")
-                with tmp_path.open("wb") as handle:
-                    for chunk in response.iter_bytes(65536):
-                        digest.update(chunk)
-                        handle.write(chunk)
+            response = self._asset_request(self._asset)
+            with tmp_path.open("wb") as handle:
+                for chunk in response.iter_bytes(65536):
+                    digest.update(chunk)
+                    handle.write(chunk)
 
             if release.sha256 and digest.hexdigest() != release.sha256:
                 raise RuntimeError(
                     "sha256 del firmware no coincide: "
                     f"esperado {release.sha256}, obtenido {digest.hexdigest()}"
                 )
+            if not release.sha256:
+                LOG.info("sha256 calculado: %s", digest.hexdigest())
 
             tmp_path.replace(target)
         finally:

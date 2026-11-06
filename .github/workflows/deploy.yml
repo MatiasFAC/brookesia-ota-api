@@ -46,6 +46,9 @@ jobs:
             User ${DEPLOY_USER}
           EOF
           ssh deploy "mkdir -p /srv/apps_matias/ma-brookesia-ota/app /srv/apps_matias/ma-brookesia-ota/cache"
+          # El contenedor corre como el usuario 10001 (ver app/Dockerfile): el bind
+          # mount del cache tiene que pertenecerle para que pueda escribir.
+          ssh deploy "chown -R 10001:10001 /srv/apps_matias/ma-brookesia-ota/cache"
           rsync -az --delete --exclude '__pycache__' --exclude '.pytest_cache' \
             -e "ssh -F ~/.ssh/config" app/ deploy:/srv/apps_matias/ma-brookesia-ota/app/
           rsync -az -e "ssh -F ~/.ssh/config" compose.yml deploy:/srv/apps_matias/ma-brookesia-ota/compose.yml
