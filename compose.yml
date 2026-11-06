@@ -1,0 +1,41 @@
+# ma-brookesia-ota: API pública que distribuye el firmware ESP-Brookesia
+# de la JC4880P443C_I_W. La placa consulta https://ota.m-a.dev/manifest.json
+# y descarga el binario de la última versión publicada como release de GitHub.
+#
+# DNS: registro A ota.m-a.dev -> 185.202.236.152 (este servidor), creado via
+# la API de Cloudflare (zona m-a.dev, credencial cloudflare-usr-matias en
+# /srv/dns.json). Modo DNS-only (proxied=false) para que el challenge HTTP-01
+# de Let's Encrypt llegue al origen.
+#
+# TLS: Let's Encrypt, gestionado por Traefik.
+
+services:
+  api:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: ma-brookesia-ota-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Cache de los binarios descargados desde GitHub (bind mount del host).
+      - ./cache:/var/cache/brookesia-ota
+    networks:
+      - traefik_proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_proxy
+      - traefik.http.routers.ma-brookesia-ota.rule=Host(`ota.m-a.dev`)
+      - traefik.http.routers.ma-brookesia-ota.entrypoints=websecure
+      - traefik.http.routers.ma-brookesia-ota.tls.certresolver=letsencrypt
+      - traefik.http.services.ma-brookesia-ota.loadbalancer.server.port=8000
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  traefik_proxy:
+    external: true

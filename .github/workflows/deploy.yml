@@ -1,0 +1,81 @@
+name: Deploy API OTA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nunca dos despliegues a la vez contra el mismo servidor.
+concurrency:
+  group: deploy-ota-api
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Desplegar en el servidor Contabo
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar la clave SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          cat > ~/.ssh/config <<'EOF'
+          Host deploy
+            IdentityFile ~/.ssh/deploy_key
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+
+      - name: Copiar el código al servidor
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          cat >> ~/.ssh/config <<EOF
+          Host deploy
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+          EOF
+          ssh deploy "mkdir -p /srv/apps_matias/ma-brookesia-ota/app /srv/apps_matias/ma-brookesia-ota/cache"
+          rsync -az --delete --exclude '__pycache__' --exclude '.pytest_cache' \
+            -e "ssh -F ~/.ssh/config" app/ deploy:/srv/apps_matias/ma-brookesia-ota/app/
+          rsync -az -e "ssh -F ~/.ssh/config" compose.yml deploy:/srv/apps_matias/ma-brookesia-ota/compose.yml
+
+      - name: Escribir la configuración
+        env:
+          OTA_GITHUB_TOKEN: ${{ secrets.OTA_GITHUB_TOKEN }}
+        run: |
+          # El .env lleva el token de GitHub y queda en el servidor con 0600.
+          umask 077
+          cat > .env <<EOF
+          OTA_GITHUB_TOKEN=${OTA_GITHUB_TOKEN}
+          OTA_GITHUB_OWNER=MatiasFAC
+          OTA_GITHUB_REPO=esp-brookesia-jc4880
+          OTA_PUBLIC_URL=https://ota.m-a.dev
+          OTA_MANIFEST_TTL=30
+          OTA_LOG_LEVEL=INFO
+          EOF
+          scp -F ~/.ssh/config .env deploy:/srv/apps_matias/ma-brookesia-ota/.env
+          ssh deploy "chmod 600 /srv/apps_matias/ma-brookesia-ota/.env"
+
+      - name: Levantar el servicio
+        run: |
+          ssh deploy "cd /srv/apps_matias/ma-brookesia-ota \
+            && docker compose up -d --build \
+            && docker compose ps"
+
+      - name: Comprobar que responde
+        run: |
+          curl -fsS --retry 6 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/healthz
+          echo
+          curl -fsS --retry 6 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/manifest.json
+          echo
