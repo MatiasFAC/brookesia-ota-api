@@ -82,7 +82,14 @@ jobs:
 
       - name: Comprobar que responde
         run: |
-          curl -fsS --retry 8 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/healthz
+          # La primera visita tras desplegar dispara la emision del certificado de
+          # Let's Encrypt: el primer curl va sin validar (solo para provocar el
+          # challenge) y los siguientes ya usan el certificado normal.
+          curl -fsS -k --retry 5 --retry-delay 3 --retry-all-errors \
+            https://ota.m-a.dev/healthz || true
+          curl -fsS --retry 10 --retry-delay 5 --retry-all-errors \
+            https://ota.m-a.dev/healthz
           echo
-          curl -fsS --retry 8 --retry-delay 5 --retry-connrefused https://ota.m-a.dev/manifest.json
+          curl -fsS --retry 10 --retry-delay 5 --retry-all-errors \
+            https://ota.m-a.dev/manifest.json
           echo
