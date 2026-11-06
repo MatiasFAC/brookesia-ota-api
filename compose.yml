@@ -1,6 +1,10 @@
 # ma-brookesia-ota: API pública que distribuye el firmware ESP-Brookesia
 # de la JC4880P443C_I_W. La placa consulta https://ota.m-a.dev/manifest.json
-# y descarga el binario de la última versión publicada como release de GitHub.
+# y descarga el binario de la última versión publicada.
+#
+# Los binarios NO están en GitHub: los sube el pipeline al endpoint
+# POST /upload/<canal>, protegido con el token de OTA_UPLOAD_TOKEN. La API
+# guarda el último de cada canal (dev y prod) en el volumen de cache.
 #
 # DNS: registro A ota.m-a.dev -> 185.202.236.152 (este servidor), creado via
 # la API de Cloudflare (zona m-a.dev, credencial cloudflare-usr-matias en
@@ -19,7 +23,7 @@ services:
     env_file:
       - .env
     volumes:
-      # Cache de los binarios descargados desde GitHub (bind mount del host).
+      # Binarios publicados (un .bin y un .json por canal). Bind mount del host.
       - ./cache:/var/cache/brookesia-ota
     networks:
       - traefik_proxy

@@ -50,18 +50,19 @@ jobs:
 
       - name: Escribir la configuración
         env:
-          OTA_GITHUB_TOKEN: ${{ secrets.OTA_GITHUB_TOKEN }}
+          OTA_UPLOAD_TOKEN: ${{ secrets.OTA_UPLOAD_TOKEN }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          # El .env lleva el token de GitHub y queda en el servidor con 0600.
+          # El .env lleva el token de subida (el que protege POST /upload/<canal>)
+          # y queda en el servidor con 0600. El mismo valor lo usa el pipeline de
+          # release del firmware para subir los binarios.
           umask 077
           cat > .env <<EOF
-          OTA_GITHUB_TOKEN=${OTA_GITHUB_TOKEN}
-          OTA_GITHUB_OWNER=MatiasFAC
-          OTA_GITHUB_REPO=esp-brookesia-jc4880
+          OTA_UPLOAD_TOKEN=${OTA_UPLOAD_TOKEN}
           OTA_PUBLIC_URL=https://ota.m-a.dev
-          OTA_MANIFEST_TTL=30
+          OTA_CACHE_DIR=/var/cache/brookesia-ota
+          OTA_MAX_UPLOAD_BYTES=33554432
           OTA_LOG_LEVEL=INFO
           EOF
           SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
@@ -90,6 +91,8 @@ jobs:
           curl -fsS --retry 10 --retry-delay 5 --retry-all-errors \
             https://ota.m-a.dev/healthz
           echo
-          curl -fsS --retry 10 --retry-delay 5 --retry-all-errors \
-            https://ota.m-a.dev/manifest.json
+          # El manifiesto da 503 si todavia no hay ningun binario subido: no es
+          # un fallo del despliegue, asi que no se hace fallar el pipeline.
+          curl -sS --retry 10 --retry-delay 5 --retry-all-errors \
+            https://ota.m-a.dev/manifest.json || true
           echo

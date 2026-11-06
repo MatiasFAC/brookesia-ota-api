@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py github_release.py ./
+COPY main.py store.py ./
 
 # El caché de binarios vive en un volumen montado desde el host.
 RUN mkdir -p /var/cache/brookesia-ota \
