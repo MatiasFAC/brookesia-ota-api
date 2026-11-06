@@ -75,6 +75,16 @@ HTTP-01 de Let's Encrypt llegue al origen.
 | `DEPLOY_USER` | Usuario SSH (root). |
 | `OTA_GITHUB_TOKEN` | PAT de GitHub con scope `repo` para leer los releases privados. |
 
+> **El token tiene que ser de larga duración.** El token que emite la CLI de GitHub
+> (`gh auth token`) es un token OAuth de sesión: caduca en unas horas, así que sirve
+> para probar, pero no para un servidor. Lo que hace falta es un **PAT**:
+> *GitHub → Settings → Developer settings → Personal access tokens → Fine-grained*,
+> con acceso de lectura al repositorio `MatiasFAC/esp-brookesia-jc4880`
+> (permisos *Contents: Read*), o un PAT clásico con el scope `repo`.
+>
+> Se cambia sin tocar el servidor: `gh secret set OTA_GITHUB_TOKEN --repo
+> MatiasFAC/brookesia-ota-api` y se relanza el pipeline.
+
 ### Configuración (`.env`)
 
 | Variable | Por defecto | Para qué |
